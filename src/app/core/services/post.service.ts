@@ -119,8 +119,11 @@ export class PostService {
       }
 
       const tagPostIds = filter.tag ? await this.fetchPostIdsForTag(filter.tag) : null;
+      const bookmarkedPostIds = filter.bookmarkedOnly
+        ? await this.fetchBookmarkedPostIds(this.authService.currentUser()?.id)
+        : null;
 
-      if (tagPostIds !== null && tagPostIds.length === 0) {
+      if ((tagPostIds !== null && tagPostIds.length === 0) || bookmarkedPostIds?.length === 0) {
         if (filter.page <= 1) {
           this.postsSignal.set([]);
         }
@@ -136,6 +139,10 @@ export class PostService {
 
       if (tagPostIds !== null) {
         query = query.in('id', tagPostIds);
+      }
+
+      if (bookmarkedPostIds !== null) {
+        query = query.in('id', bookmarkedPostIds);
       }
 
       const windowStart = filter.sort === 'top' ? timeRangeStart(filter.timeRange) : null;
@@ -431,24 +438,26 @@ export class PostService {
     }
   }
 
-  /** Applies an optimistic reaction toggle to one post already in the feed. */
-  applyReactionToFeed(postId: string, reaction: ReactionType, nextState: boolean): void {
-    this.postsSignal.update((posts) =>
-      posts.map((post) =>
-        post.id === postId
-          ? {
-              ...post,
-              reactionsCount: Math.max(0, post.reactionsCount + (nextState ? 1 : -1)),
-              userReactions: { ...post.userReactions, [reaction]: nextState },
-            }
-          : post,
-      ),
-    );
-  }
+  /** Post ids the visitor bookmarked, used by the reading list feed. */
+  private async fetchBookmarkedPostIds(userId: string | undefined): Promise<string[]> {
+    if (!userId) {
+      return [];
+    }
 
-  /** Restores the pre-toggle reaction state of one feed post. */
-  restoreFeedReaction(postId: string, reaction: ReactionType, previousState: boolean): void {
-    this.applyReactionToFeed(postId, reaction, previousState);
+    const { data, error } = await this.supabase
+      .from('reactions')
+      .select('post_id')
+      .eq('user_id', userId)
+      .eq('reaction', 'bookmark')
+      .not('post_id', 'is', null);
+
+    if (error) {
+      throw error;
+    }
+
+    return (data ?? [])
+      .map((row) => (row as { post_id: string | null }).post_id)
+      .filter((postId): postId is string => postId !== null);
   }
 
   /** Post ids carrying a tag, resolved before the feed query. */

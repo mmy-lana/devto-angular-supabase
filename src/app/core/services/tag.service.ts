@@ -203,6 +203,34 @@ export function toTagName(rawName: string): string {
     .replace(/-+$/g, '');
 }
 
+/**
+ * Builds the client-side placeholder shown for a tag the author just typed.
+ *
+ * The row is only written when the post is published, but the chip has to look
+ * final immediately, so the placeholder reuses the same slug and palette entry
+ * `getOrCreateTag` will use. Its id is synthetic (`pending:<name>`), which keeps
+ * it distinguishable from database rows until the tags are resolved.
+ */
+export function createPendingTag(rawName: string): Tag {
+  const name = toTagName(rawName);
+  const colors = TAG_COLOR_PALETTE[hashName(name) % TAG_COLOR_PALETTE.length];
+
+  return {
+    id: `pending:${name}`,
+    name,
+    displayName: toDisplayName(rawName, name),
+    hexColor: colors.hexColor,
+    bgColor: colors.bgColor,
+    description: '',
+    createdAt: new Date().toISOString(),
+  };
+}
+
+/** True when a tag only exists in the editor and has not been written yet. */
+export function isPendingTag(tag: Tag): boolean {
+  return tag.id.startsWith('pending:');
+}
+
 /** Keeps the author's capitalisation for display, e.g. `Web Dev`. */
 function toDisplayName(rawName: string, fallback: string): string {
   const trimmed = (rawName ?? '').trim().replace(/\s+/g, ' ').slice(0, MAX_TAG_NAME_LENGTH);

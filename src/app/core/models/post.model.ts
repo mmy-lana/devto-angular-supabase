@@ -56,6 +56,8 @@ export interface FeedFilter {
   timeRange?: FeedTimeRange;
   tag?: string;
   searchQuery?: string;
+  /** Restricts the feed to posts the signed-in visitor bookmarked. */
+  bookmarkedOnly?: boolean;
   page: number;
   pageSize: number;
 }
