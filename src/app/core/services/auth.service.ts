@@ -25,7 +25,8 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
  */
 @Injectable({ providedIn: 'root' })
 export class AuthService {
-  private readonly supabase = inject(SupabaseService).client;
+  private readonly supabaseService = inject(SupabaseService);
+  private readonly supabase = this.supabaseService.client;
   private readonly destroyRef = inject(DestroyRef);
 
   private readonly sessionSignal = signal<Session | null>(null);
@@ -134,6 +135,12 @@ export class AuthService {
    * result only means the redirect was handed to Supabase successfully.
    */
   signInWithGithub(): Promise<AuthActionResult> {
+    const configurationError = this.requireConfiguration('Signing in');
+
+    if (configurationError) {
+      return Promise.resolve({ error: configurationError });
+    }
+
     return this.runAuthAction(
       () =>
         this.supabase.auth.signInWithOAuth({
@@ -150,6 +157,12 @@ export class AuthService {
    * The address is validated locally first so a typo never costs a round trip.
    */
   async signInWithEmail(email: string): Promise<AuthActionResult> {
+    const configurationError = this.requireConfiguration('Signing in');
+
+    if (configurationError) {
+      return { error: configurationError };
+    }
+
     const normalizedEmail = email.trim().toLowerCase();
 
     if (!EMAIL_PATTERN.test(normalizedEmail)) {
@@ -173,6 +186,12 @@ export class AuthService {
 
   /** Ends the session locally and on the server. */
   async signOut(): Promise<AuthActionResult> {
+    const configurationError = this.requireConfiguration('Signing out');
+
+    if (configurationError) {
+      return { error: configurationError };
+    }
+
     const result = await this.runAuthAction(
       () => this.supabase.auth.signOut(),
       'Could not sign out.',
@@ -186,6 +205,26 @@ export class AuthService {
     }
 
     return result;
+  }
+
+  /**
+   * Refuses an interactive auth action when the build has no Supabase project.
+   *
+   * Every auth endpoint needs the remote, so failing here turns an opaque fetch
+   * failure into a message that explains why sign-in is unavailable.
+   */
+  private requireConfiguration(action: string): Error | null {
+    if (this.supabaseService.isConfigured) {
+      return null;
+    }
+
+    const message =
+      `${action} needs a Supabase connection. This build is running on bundled sample content, ` +
+      'so accounts are unavailable.';
+
+    this.errorSignal.set(message);
+
+    return new Error(message);
   }
 
   /** Absolute URL Supabase redirects back to after OAuth or magic-link sign-in. */

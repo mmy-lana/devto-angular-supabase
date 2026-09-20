@@ -31,20 +31,75 @@ export function readViteVariable(value: string | undefined): string {
 }
 
 /**
- * Lists the required Supabase variables that are still unset.
+ * Substrings that identify the sample values shipped in `.env.example`.
  *
- * Returns an empty array when the configuration is complete.
+ * A deployment that copied the example file without editing it, or a build
+ * environment that defines the variables as empty strings, has to be treated
+ * exactly like a missing configuration: the application reads its bundled
+ * sample content instead of issuing requests that are guaranteed to fail.
  */
-export function findMissingSupabaseVariables(environment: Environment): string[] {
-  const missing: string[] = [];
+const PLACEHOLDER_MARKERS = [
+  'your-supabase-project',
+  'your-supabase-anon-key',
+  'your-project',
+  'your-anon-key',
+  'changeme',
+  'replace-me',
+];
 
-  if (environment.supabaseUrl.length === 0) {
-    missing.push(SUPABASE_URL_VARIABLE);
+/** `true` when a value is empty or still holds a value from `.env.example`. */
+export function isPlaceholderValue(value: string): boolean {
+  const normalized = readViteVariable(value).toLowerCase();
+
+  return (
+    normalized.length === 0 || PLACEHOLDER_MARKERS.some((marker) => normalized.includes(marker))
+  );
+}
+
+/** `true` for an absolute `http`/`https` URL, which is all `createClient` accepts. */
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/** Outcome of inspecting an environment, with a reason for every problem found. */
+export interface SupabaseConfigurationReport {
+  /** `true` only when a usable remote URL and key are both present. */
+  readonly isConfigured: boolean;
+  /** Human readable reasons the remote is unusable; empty when it is usable. */
+  readonly issues: readonly string[];
+}
+
+/**
+ * Decides whether the build can talk to a Supabase project.
+ *
+ * Never throws: an unusable configuration is a supported state, not a failure.
+ * The application serves its bundled sample dataset and reports the reason
+ * through {@link SupabaseConfigurationReport.issues} instead of failing to start.
+ */
+export function inspectSupabaseConfiguration(environment: Environment): SupabaseConfigurationReport {
+  const issues: string[] = [];
+  const url = readViteVariable(environment.supabaseUrl);
+  const key = readViteVariable(environment.supabaseAnonKey);
+
+  if (url.length === 0) {
+    issues.push(`${SUPABASE_URL_VARIABLE} is not set`);
+  } else if (isPlaceholderValue(url)) {
+    issues.push(`${SUPABASE_URL_VARIABLE} still holds the value from .env.example`);
+  } else if (!isHttpUrl(url)) {
+    issues.push(`${SUPABASE_URL_VARIABLE} is not an absolute http(s) URL`);
   }
 
-  if (environment.supabaseAnonKey.length === 0) {
-    missing.push(SUPABASE_ANON_KEY_VARIABLE);
+  if (key.length === 0) {
+    issues.push(`${SUPABASE_ANON_KEY_VARIABLE} is not set`);
+  } else if (isPlaceholderValue(key)) {
+    issues.push(`${SUPABASE_ANON_KEY_VARIABLE} still holds the value from .env.example`);
   }
 
-  return missing;
+  return { isConfigured: issues.length === 0, issues };
 }

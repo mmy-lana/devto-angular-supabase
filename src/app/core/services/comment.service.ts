@@ -1,4 +1,5 @@
 import { computed, inject, Injectable, signal } from '@angular/core';
+import { MOCK_COMMENTS } from '../mocks/devto-mock-data';
 import {
   DELETED_COMMENT_HTML,
   DELETED_COMMENT_MARKDOWN,
@@ -11,7 +12,7 @@ import {
   findCommentNode,
   MAX_COMMENT_DEPTH,
 } from '../utils/comment-tree.builder';
-import { toErrorMessage } from '../utils/error-message.util';
+import { isNetworkFailure, toErrorMessage } from '../utils/error-message.util';
 import { AuthService } from './auth.service';
 import { MarkdownService } from './markdown.service';
 import { SupabaseService } from './supabase.service';
@@ -39,16 +40,29 @@ const COMMENT_SELECT = `
  * deleting a comment updates the tree signal immediately: the new reply appears
  * under its parent without a refetch, and a deleted comment keeps its position
  * with a placeholder body so the replies below it stay readable.
+ *
+ * When the remote is unconfigured or unreachable the same tree is served from
+ * the bundled dataset, and `usingSampleDataSignal` records that fact so deletes
+ * update the sample tree in place instead of pretending to write to a database.
  */
 @Injectable({ providedIn: 'root' })
 export class CommentService {
-  private readonly supabase = inject(SupabaseService).client;
+  private readonly supabaseService = inject(SupabaseService);
+  private readonly supabase = this.supabaseService.client;
   private readonly authService = inject(AuthService);
   private readonly markdownService = inject(MarkdownService);
 
   readonly commentsTreeSignal = signal<CommentNode[]>([]);
   readonly loadingSignal = signal<boolean>(false);
   readonly errorSignal = signal<string>('');
+
+  /**
+   * `true` while the published tree comes from the bundled dataset.
+   *
+   * Mutations use it to decide between writing to the database and updating the
+   * local tree, so an offline reader still sees their own delete take effect.
+   */
+  readonly usingSampleDataSignal = signal<boolean>(false);
 
   /** Every comment in the thread, replies included. */
   readonly totalCount = computed(() => countCommentNodes(this.commentsTreeSignal()));
@@ -57,6 +71,13 @@ export class CommentService {
   async loadCommentsForPost(postId: string): Promise<void> {
     this.loadingSignal.set(true);
     this.errorSignal.set('');
+
+    if (!this.supabaseService.isConfigured) {
+      this.publishLocalDiscussion(postId, 'This discussion is being served from the bundled dataset.');
+      this.loadingSignal.set(false);
+
+      return;
+    }
 
     try {
       const { data, error } = await this.supabase
@@ -75,12 +96,25 @@ export class CommentService {
       this.commentsTreeSignal.set(
         buildCommentTree(rows, this.authService.currentUser()?.id, likedCommentIds),
       );
+      this.usingSampleDataSignal.set(false);
+      this.supabaseService.markOnline();
     } catch (error) {
-      this.errorSignal.set(toErrorMessage(error, 'Could not load the discussion.'));
-      this.commentsTreeSignal.set([]);
+      this.publishLocalDiscussion(postId, toErrorMessage(error, 'The discussion could not be reached.'));
     } finally {
       this.loadingSignal.set(false);
     }
+  }
+
+  /**
+   * Publishes the bundled discussion for a post.
+   *
+   * Posts that only exist in the remote database have no bundled discussion, so
+   * they render an empty thread with the composer disabled instead of an error.
+   */
+  private publishLocalDiscussion(postId: string, reason: string): void {
+    this.commentsTreeSignal.set(MOCK_COMMENTS[postId] ?? []);
+    this.usingSampleDataSignal.set(true);
+    this.supabaseService.markOffline(reason);
   }
 
   /** Clears the discussion, e.g. when leaving a post. */
@@ -99,6 +133,16 @@ export class CommentService {
     const user = this.authService.currentUser();
     const profile = this.authService.currentProfile();
     const body = markdown.trim();
+
+    if (this.usingSampleDataSignal()) {
+      throw new Error(
+        'This discussion is shown from bundled sample content, so it cannot be replied to. Connect Supabase to join in.',
+      );
+    }
+
+    if (!this.supabaseService.isConfigured) {
+      throw new Error('Commenting needs a Supabase connection, which this build does not have.');
+    }
 
     if (!user || !profile) {
       throw new Error('Sign in to join the discussion.');
@@ -160,21 +204,63 @@ export class CommentService {
     return created;
   }
 
-  /** Soft deletes a comment, keeping its replies visible. */
+  /**
+   * Soft deletes a comment, keeping its replies visible.
+   *
+   * The update requests the affected id back, because a filter that matches
+   * nothing is not an error: PostgREST answers a rejected or unmatched update
+   * with an empty body and no error at all. Without that check the tree would
+   * show a deleted comment that the database still holds.
+   */
   async deleteComment(commentId: string): Promise<void> {
-    const { error } = await this.supabase
-      .from('comments')
-      .update({
-        is_deleted: true,
-        content_markdown: DELETED_COMMENT_MARKDOWN,
-        content_html: DELETED_COMMENT_HTML,
-      })
-      .eq('id', commentId);
+    if (this.usingSampleDataSignal()) {
+      this.markCommentDeletedLocally(commentId);
 
-    if (error) {
-      throw new Error(toErrorMessage(error, 'Could not delete this comment.'));
+      return;
     }
 
+    if (!this.supabaseService.isConfigured) {
+      throw new Error('Deleting needs a Supabase connection, which this build does not have.');
+    }
+
+    try {
+      const { data, error } = await this.supabase
+        .from('comments')
+        .update({
+          is_deleted: true,
+          content_markdown: DELETED_COMMENT_MARKDOWN,
+          content_html: DELETED_COMMENT_HTML,
+        })
+        .eq('id', commentId)
+        .select('id');
+
+      if (error) {
+        throw error;
+      }
+
+      if (!data || data.length === 0) {
+        // Nothing was updated: the row is gone, or row level security hid it
+        // from this visitor. Reporting success would leave the tree lying.
+        throw new Error('This comment could not be deleted. Reload the page and try again.');
+      }
+
+      this.markCommentDeletedLocally(commentId);
+      this.supabaseService.markOnline();
+    } catch (error) {
+      if (isNetworkFailure(error)) {
+        // The write never reached the database, so the local tree is untouched
+        // and the reader gets a message they can act on.
+        this.supabaseService.markOffline(toErrorMessage(error, 'The discussion is unreachable.'));
+      }
+
+      throw error instanceof Error
+        ? error
+        : new Error(toErrorMessage(error, 'Could not delete this comment.'));
+    }
+  }
+
+  /** Applies the soft delete to the published tree. */
+  private markCommentDeletedLocally(commentId: string): void {
     this.commentsTreeSignal.update((tree) =>
       mapTreeNode(tree, commentId, (node) => ({
         ...node,

@@ -1,4 +1,5 @@
 import { inject, Injectable, signal } from '@angular/core';
+import { findMockPostBySlug, MOCK_POSTS } from '../mocks/devto-mock-data';
 import {
   mapPostDetailRow,
   mapPostSummaryRow,
@@ -20,8 +21,8 @@ import { AuthService } from './auth.service';
 import { MarkdownService } from './markdown.service';
 import { SupabaseService } from './supabase.service';
 
-/** Embed and column set shared by the feed and detail queries. */
-const POST_PROJECTION = `
+/** Columns every feed and detail query returns. */
+const POST_COLUMNS = `
   id,
   author_id,
   title,
@@ -32,12 +33,41 @@ const POST_PROJECTION = `
   reactions_count,
   comments_count,
   created_at,
-  updated_at,
-  profiles!posts_author_id_fkey (*),
-  post_tags (
-    tags (*)
-  )
+  updated_at
 `;
+
+/** Author embed, shared by the feed and detail queries. */
+const POST_AUTHOR_EMBED = 'profiles!posts_author_id_fkey (*)';
+
+/** Tag embed used by the unfiltered feed and by the post detail query. */
+const POST_TAG_EMBED = 'post_tags ( tags (*) )';
+
+/** Embed and column set shared by the feed and detail queries. */
+const POST_PROJECTION = `${POST_COLUMNS}, ${POST_AUTHOR_EMBED}, ${POST_TAG_EMBED}`;
+
+/**
+ * Feed projection for a tag-filtered feed (ARCH-01).
+ *
+ * `post_tags!inner(tags!inner(id))` turns the embeds into an inner join, so the
+ * filter is applied by Postgres and only matching posts are returned. The filter
+ * also narrows `post_tags` to the tag being filtered on, which would silently
+ * drop a post's other tags from its card; `post_tags_all` therefore requests the
+ * complete tag list through a second, unfiltered embed of the same relationship.
+ */
+const TAG_FILTERED_POST_PROJECTION =
+  `${POST_COLUMNS}, ${POST_AUTHOR_EMBED}, ` +
+  'post_tags!inner ( tags!inner (id) ), post_tags_all:post_tags ( tags (*) )';
+
+/**
+ * Feed projection for the reading list (ARCH-01).
+ *
+ * Same inner-join technique applied to the visitor's own bookmarks, so the
+ * server returns exactly the bookmarked posts instead of a list of ids that the
+ * client then has to send back in an `in` filter.
+ */
+const BOOKMARK_FILTERED_POST_PROJECTION =
+  `${POST_COLUMNS}, ${POST_AUTHOR_EMBED}, ${POST_TAG_EMBED}, ` +
+  'reactions!inner (user_id, reaction)';
 
 /** Postgres unique-violation code, raised when a slug is already taken. */
 const UNIQUE_VIOLATION = '23505';
@@ -68,9 +98,29 @@ function timeRangeStart(range: FeedFilter['timeRange']): string | null {
   return new Date(Date.now() - hours[range] * 3_600_000).toISOString();
 }
 
-/** Removes characters that would break PostgREST filter syntax. */
+/**
+ * Characters that carry meaning in a PostgREST filter expression.
+ *
+ * `(`, `)` and `,` delimit the `or=(...)` grammar, `"` quotes a value, `*` and
+ * `%` are wildcards and `[` and `]` start a range. A term containing any of them
+ * used to be interpolated straight into the query string, so an ordinary search
+ * such as `Q&A (2024)` or `C# [` produced a syntax error instead of a result
+ * (UI-01). They are replaced by a space rather than dropped so the term keeps
+ * word boundaries.
+ */
+const POSTGREST_RESERVED_CHARACTERS = /[,()%*\\"[\]']/g;
+
+/**
+ * Removes the characters that would break PostgREST filter syntax (UI-01).
+ *
+ * The cleaned term is passed through as a value and percent-encoded by the
+ * client when it builds the request, which is what makes terms such as `C#` or
+ * `Q&A` safe: `#`, `&` and `+` are encoded on the wire and decoded again by
+ * PostgREST. Encoding the term here as well would double-encode it, so the
+ * pattern would look for the literal text `%23` instead of `#`.
+ */
 function sanitizeSearchTerm(term: string): string {
-  return term.replace(/[,()%*\\"']/g, ' ').replace(/\s+/g, ' ').trim();
+  return term.replace(POSTGREST_RESERVED_CHARACTERS, ' ').replace(/\s+/g, ' ').trim();
 }
 
 /** Quotes a value for use inside a PostgREST `or` expression. */
@@ -82,14 +132,20 @@ function quoteFilterValue(value: string): string {
  * Post queries and feed state.
  *
  * Feed paging uses a keyset cursor rather than `offset`, so inserting a post
- * while the reader scrolls can never duplicate or skip a card. `sort: 'latest'`
- * pages on `created_at`, every other sort pages on the
- * `(reactions_count, created_at, id)` triplet with the matching tuple
- * comparison expressed as a PostgREST `or` filter.
+ * while the reader scrolls can never duplicate or skip a card. Both sort
+ * strategies page on a composite key — `(created_at, id)` for `latest` and
+ * `(reactions_count, created_at, id)` otherwise — because ordering on a column
+ * that is not unique lets two rows share a position and one of them be skipped
+ * (DATA-02).
+ *
+ * Every read falls back to the bundled dataset in `core/mocks` when the remote
+ * is unconfigured or unreachable, so a build without environment variables — or
+ * a laptop with the Docker stack stopped — still renders a complete feed.
  */
 @Injectable({ providedIn: 'root' })
 export class PostService {
-  private readonly supabase = inject(SupabaseService).client;
+  private readonly supabaseService = inject(SupabaseService);
+  private readonly supabase = this.supabaseService.client;
   private readonly authService = inject(AuthService);
   private readonly markdownService = inject(MarkdownService);
 
@@ -105,9 +161,9 @@ export class PostService {
    * Loads a page of the feed into `postsSignal`.
    *
    * Page 1 (and any explicit `resetCursor`) starts a fresh list; later pages are
-   * appended. Fetch failures are recorded in `errorSignal` and returned as an
-   * empty list instead of throwing, because the feed is rendered from the signal
-   * and must stay usable while offline.
+   * appended. When the remote is unconfigured or the request fails, the same
+   * filter is answered from the bundled dataset instead, so the feed renders
+   * complete content rather than an empty list with an error banner.
    */
   async fetchFeed(filter: FeedFilter, resetCursor = false): Promise<PostSummary[]> {
     this.loadingSignal.set(true);
@@ -118,31 +174,40 @@ export class PostService {
         this.cursorState = null;
       }
 
-      const tagPostIds = filter.tag ? await this.fetchPostIdsForTag(filter.tag) : null;
-      const bookmarkedPostIds = filter.bookmarkedOnly
-        ? await this.fetchBookmarkedPostIds(this.authService.currentUser()?.id)
-        : null;
+      if (!this.supabaseService.isConfigured) {
+        return this.serveLocalFeed(filter);
+      }
 
-      if ((tagPostIds !== null && tagPostIds.length === 0) || bookmarkedPostIds?.length === 0) {
+      const currentUserId = this.authService.currentUser()?.id;
+
+      if (filter.bookmarkedOnly && !currentUserId) {
+        // The reading list is stored per account, so there is nothing to show
+        // before sign-in. The page renders its signed-out state for this result.
         if (filter.page <= 1) {
           this.postsSignal.set([]);
         }
+
         this.hasMoreSignal.set(false);
 
         return [];
       }
 
-      let query = this.supabase
-        .from('posts')
-        .select(POST_PROJECTION)
-        .eq('published', true);
+      // ARCH-01: the tag filter travels into the query as an inner join instead
+      // of being resolved to a list of post ids first.
+      const projection = filter.tag
+        ? TAG_FILTERED_POST_PROJECTION
+        : filter.bookmarkedOnly
+          ? BOOKMARK_FILTERED_POST_PROJECTION
+          : POST_PROJECTION;
 
-      if (tagPostIds !== null) {
-        query = query.in('id', tagPostIds);
+      let query = this.supabase.from('posts').select(projection).eq('published', true);
+
+      if (filter.tag) {
+        query = query.eq('post_tags.tags.name', filter.tag);
       }
 
-      if (bookmarkedPostIds !== null) {
-        query = query.in('id', bookmarkedPostIds);
+      if (filter.bookmarkedOnly && currentUserId) {
+        query = query.eq('reactions.user_id', currentUserId).eq('reactions.reaction', 'bookmark');
       }
 
       const windowStart = filter.sort === 'top' ? timeRangeStart(filter.timeRange) : null;
@@ -161,7 +226,15 @@ export class PostService {
         query = query.order('created_at', { ascending: false }).order('id', { ascending: false });
 
         if (this.cursorState) {
-          query = query.lt('created_at', this.cursorState.lastCreatedAt);
+          // DATA-02: `created_at` is not unique, so the cursor compares the full
+          // composite key. Pages ordered on the timestamp alone lose every row
+          // that ties with the last one of the previous page.
+          const created = quoteFilterValue(this.cursorState.lastCreatedAt);
+          const { lastId } = this.cursorState;
+
+          query = query.or(
+            `created_at.lt.${created},and(created_at.eq.${created},id.lt.${lastId})`,
+          );
         }
       } else {
         query = query
@@ -207,7 +280,6 @@ export class PostService {
         };
       }
 
-      const currentUserId = this.authService.currentUser()?.id;
       const userReactions = currentUserId
         ? await this.fetchUserReactionsForPosts(
             pageRows.map((row) => row.id),
@@ -219,16 +291,14 @@ export class PostService {
         mapPostSummaryRow(row, userReactions.get(row.id) ?? createEmptyUserReactions()),
       );
 
-      this.postsSignal.update((previous) =>
-        filter.page <= 1 ? mapped : dedupeById([...previous, ...mapped]),
-      );
-      this.hasMoreSignal.set(hasMore);
+      this.publishPage(mapped, filter.page <= 1, hasMore);
+      this.supabaseService.markOnline();
 
       return mapped;
     } catch (error) {
-      this.errorSignal.set(toErrorMessage(error, 'Could not load posts. Pull to refresh to retry.'));
+      this.supabaseService.markOffline(toErrorMessage(error, 'The feed could not be reached.'));
 
-      return [];
+      return this.serveLocalFeed(filter);
     } finally {
       this.loadingSignal.set(false);
     }
@@ -242,9 +312,19 @@ export class PostService {
     this.cursorState = null;
   }
 
-  /** Loads one post with its rendered body, or `null` when the slug is unknown. */
+  /**
+   * Loads one post with its rendered body.
+   *
+   * Returns `null` only when the slug is genuinely unknown; an unreachable or
+   * unconfigured remote serves the bundled copy of the post instead, so a shared
+   * link still opens offline.
+   */
   async getPostBySlug(slug: string): Promise<PostDetail | null> {
     this.errorSignal.set('');
+
+    if (!this.supabaseService.isConfigured) {
+      return this.serveLocalPost(slug);
+    }
 
     try {
       const { data, error } = await this.supabase
@@ -267,11 +347,13 @@ export class PostService {
         ? (await this.fetchUserReactionsForPosts([row.id], currentUserId)).get(row.id)
         : undefined;
 
+      this.supabaseService.markOnline();
+
       return mapPostDetailRow(row, userReactions ?? createEmptyUserReactions());
     } catch (error) {
-      this.errorSignal.set(toErrorMessage(error, 'Could not load this post.'));
+      this.supabaseService.markOffline(toErrorMessage(error, 'This post could not be reached.'));
 
-      return null;
+      return this.serveLocalPost(slug);
     }
   }
 
@@ -283,6 +365,10 @@ export class PostService {
    * author's publish action.
    */
   async createPost(payload: CreatePostPayload): Promise<string> {
+    if (!this.supabaseService.isConfigured) {
+      throw new Error('Publishing needs a Supabase connection, which this build does not have.');
+    }
+
     const user = this.authService.currentUser();
 
     if (!user) {
@@ -359,6 +445,10 @@ export class PostService {
 
   /** Updates a post; omitted fields keep their stored value. */
   async updatePost(postId: string, payload: UpdatePostPayload): Promise<void> {
+    if (!this.supabaseService.isConfigured) {
+      throw new Error('Editing needs a Supabase connection, which this build does not have.');
+    }
+
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
 
     if (payload.title !== undefined) {
@@ -394,6 +484,10 @@ export class PostService {
 
   /** Deletes a post and removes it from the feed signal. */
   async deletePost(postId: string): Promise<void> {
+    if (!this.supabaseService.isConfigured) {
+      throw new Error('Deleting needs a Supabase connection, which this build does not have.');
+    }
+
     const { error } = await this.supabase.from('posts').delete().eq('id', postId);
 
     if (error) {
@@ -405,6 +499,10 @@ export class PostService {
 
   /** Most discussed posts, used by the sidebar's `#discuss` box. */
   async fetchMostDiscussedPosts(limit = 3): Promise<PostSummary[]> {
+    if (!this.supabaseService.isConfigured) {
+      return this.localMostDiscussedPosts(limit);
+    }
+
     try {
       const { data, error } = await this.supabase
         .from('posts')
@@ -428,64 +526,18 @@ export class PostService {
           )
         : new Map<string, UserReactionsState>();
 
+      this.supabaseService.markOnline();
+
       return rows.map((row) =>
         mapPostSummaryRow(row, userReactions.get(row.id) ?? createEmptyUserReactions()),
       );
     } catch (error) {
-      this.errorSignal.set(toErrorMessage(error, 'Could not load discussions.'));
+      this.supabaseService.markOffline(
+        toErrorMessage(error, 'The discussion sidebar could not be reached.'),
+      );
 
-      return [];
+      return this.localMostDiscussedPosts(limit);
     }
-  }
-
-  /** Post ids the visitor bookmarked, used by the reading list feed. */
-  private async fetchBookmarkedPostIds(userId: string | undefined): Promise<string[]> {
-    if (!userId) {
-      return [];
-    }
-
-    const { data, error } = await this.supabase
-      .from('reactions')
-      .select('post_id')
-      .eq('user_id', userId)
-      .eq('reaction', 'bookmark')
-      .not('post_id', 'is', null);
-
-    if (error) {
-      throw error;
-    }
-
-    return (data ?? [])
-      .map((row) => (row as { post_id: string | null }).post_id)
-      .filter((postId): postId is string => postId !== null);
-  }
-
-  /** Post ids carrying a tag, resolved before the feed query. */
-  private async fetchPostIdsForTag(tagName: string): Promise<string[]> {
-    const { data: tagRow, error: tagError } = await this.supabase
-      .from('tags')
-      .select('id')
-      .eq('name', tagName)
-      .maybeSingle();
-
-    if (tagError) {
-      throw tagError;
-    }
-
-    if (!tagRow) {
-      return [];
-    }
-
-    const { data, error } = await this.supabase
-      .from('post_tags')
-      .select('post_id')
-      .eq('tag_id', (tagRow as { id: string }).id);
-
-    if (error) {
-      throw error;
-    }
-
-    return (data ?? []).map((row) => (row as { post_id: string }).post_id);
   }
 
   /** Replaces the tag links of a post with the supplied ids. */
@@ -549,6 +601,58 @@ export class PostService {
 
     return reactionMap;
   }
+
+  /** Keeps the newest copy of each post when pages overlap. */
+  private publishPage(posts: PostSummary[], replace: boolean, hasMore: boolean): void {
+    this.postsSignal.update((previous) => (replace ? posts : dedupeById([...previous, ...posts])));
+    this.hasMoreSignal.set(hasMore);
+  }
+
+  /**
+   * Answers a feed request from the bundled dataset.
+   *
+   * Local paging is offset based because there is no server cursor to reuse; the
+   * page size, ordering and filters are applied with the same rules the query
+   * uses, so switching sources never changes what the reader sees.
+   */
+  private serveLocalFeed(filter: FeedFilter): PostSummary[] {
+    const matching = filterLocalPosts(filter);
+    const pageSize = Math.max(1, filter.pageSize);
+    const start = Math.max(0, (filter.page - 1) * pageSize);
+    const page = matching.slice(start, start + pageSize);
+    const hasMore = start + page.length < matching.length;
+
+    this.publishPage(page, filter.page <= 1, hasMore);
+
+    return page;
+  }
+
+  /** Serves one bundled post by slug, or `null` when the dataset has no such post. */
+  private serveLocalPost(slug: string): PostDetail | null {
+    const post = findMockPostBySlug(slug);
+
+    if (!post) {
+      return null;
+    }
+
+    // Detail pages render an article and its discussion, so the sample content
+    // is reported as the source until a live request succeeds again.
+    this.supabaseService.markOffline('This post is being served from the bundled dataset.');
+
+    return post;
+  }
+
+  /** Bundled posts ordered by discussion volume, mirroring the sidebar query. */
+  private localMostDiscussedPosts(limit: number): PostSummary[] {
+    this.supabaseService.markOffline(
+      'The discussion sidebar is being served from the bundled dataset.',
+    );
+
+    return MOCK_POSTS.filter((post) => post.published && post.commentsCount > 0)
+      .slice()
+      .sort((a, b) => b.commentsCount - a.commentsCount || compareNewestFirst(a, b))
+      .slice(0, Math.max(1, limit));
+  }
 }
 
 /** Keeps the newest copy of each post when pages overlap. */
@@ -560,4 +664,72 @@ function dedupeById(posts: PostSummary[]): PostSummary[] {
   }
 
   return [...byId.values()];
+}
+
+/**
+ * Newest first, with the id as tie-breaker.
+ *
+ * Mirrors `order('created_at', { ascending: false }).order('id', { ascending: false })`
+ * exactly, so a locally sorted page matches the order the query would return.
+ */
+function compareNewestFirst(a: PostSummary, b: PostSummary): number {
+  const left = Date.parse(a.createdAt);
+  const right = Date.parse(b.createdAt);
+
+  if (left !== right) {
+    return right - left;
+  }
+
+  return b.id.localeCompare(a.id);
+}
+
+/**
+ * Applies a feed filter to the bundled dataset.
+ *
+ * Ordering, filtering and the search term follow the same rules as the query
+ * builder, including the `top` window and the `relevant` ordering that ranks by
+ * reactions before recency. The reading list is account scoped, so it is empty
+ * offline: bookmarks live in the remote database.
+ */
+function filterLocalPosts(filter: FeedFilter): PostSummary[] {
+  const searchTerm = sanitizeSearchTerm(filter.searchQuery ?? '').toLowerCase();
+  const windowStart = filter.sort === 'top' ? timeRangeStart(filter.timeRange) : null;
+
+  const matching = MOCK_POSTS.filter((post) => {
+    if (!post.published) {
+      return false;
+    }
+
+    if (filter.bookmarkedOnly) {
+      return false;
+    }
+
+    if (filter.tag && !post.tags.some((tag) => tag.name === filter.tag)) {
+      return false;
+    }
+
+    if (windowStart && Date.parse(post.createdAt) < Date.parse(windowStart)) {
+      return false;
+    }
+
+    if (searchTerm.length > 0) {
+      const haystack = `${post.title}\n${post.contentMarkdown}`.toLowerCase();
+
+      if (!haystack.includes(searchTerm)) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+
+  if (filter.sort === 'latest') {
+    return matching.slice().sort(compareNewestFirst);
+  }
+
+  return matching
+    .slice()
+    .sort(
+      (a, b) => b.reactionsCount - a.reactionsCount || compareNewestFirst(a, b),
+    );
 }

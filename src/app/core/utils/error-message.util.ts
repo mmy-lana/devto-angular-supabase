@@ -33,3 +33,34 @@ export function toErrorMessage(error: unknown, fallback = 'Something went wrong.
 
   return fallback;
 }
+
+/**
+ * Heuristic test for a transport failure rather than a rejected request.
+ *
+ * The distinction decides whether the application switches to its bundled
+ * sample data: a refused connection, a blocked request or a DNS failure means
+ * the remote is unreachable, while an RLS rejection or a constraint violation
+ * means the remote answered and the request itself was refused, so the live
+ * data on screen stays valid.
+ *
+ * `fetch` reports every transport failure as a `TypeError` ("Failed to fetch" in
+ * Chromium, "Load failed" in Safari, "NetworkError..." in Firefox), which is why
+ * the message patterns are needed as well as the type check.
+ */
+export function isNetworkFailure(error: unknown): boolean {
+  if (error instanceof TypeError) {
+    return true;
+  }
+
+  const message = toErrorMessage(error, '').toLowerCase();
+
+  return (
+    message.includes('failed to fetch') ||
+    message.includes('load failed') ||
+    message.includes('networkerror') ||
+    message.includes('network request failed') ||
+    message.includes('fetch failed') ||
+    message.includes('err_connection') ||
+    message.includes('econnrefused')
+  );
+}

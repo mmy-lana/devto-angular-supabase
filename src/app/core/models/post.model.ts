@@ -108,6 +108,15 @@ export interface PostSummaryRow {
   updated_at: string;
   profiles: ProfileRow;
   post_tags: PostTagEmbedRow[];
+  /**
+   * Complete tag list, requested by the tag-filtered feed query.
+   *
+   * That query joins `post_tags` with `!inner` so Postgres applies the tag
+   * filter itself, which also narrows `post_tags` to the tag being filtered on.
+   * This alias carries the post's remaining tags so its card still shows them
+   * all. Absent from every other projection, which is why it is optional.
+   */
+  post_tags_all?: PostTagEmbedRow[];
 }
 
 /** Detail projection: the feed projection plus the article body. */
@@ -134,7 +143,7 @@ export function mapPostSummaryRow(
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     author: mapProfileRow(row.profiles),
-    tags: (row.post_tags ?? []).map((postTag) => mapTagRow(postTag.tags)),
+    tags: (row.post_tags_all ?? row.post_tags ?? []).map((postTag) => mapTagRow(postTag.tags)),
     userReactions,
   };
 }

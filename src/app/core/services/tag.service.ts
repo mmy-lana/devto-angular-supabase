@@ -1,4 +1,5 @@
 import { computed, inject, Injectable, signal } from '@angular/core';
+import { MOCK_TAGS } from '../mocks/devto-mock-data';
 import { toErrorMessage } from '../utils/error-message.util';
 import { mapTagRow, type Tag, type TagRow } from '../models/tag.model';
 import { SupabaseService } from './supabase.service';
@@ -41,13 +42,22 @@ const TAG_COLOR_PALETTE: readonly { hexColor: string; bgColor: string }[] = [
  * Tag catalogue and creation.
  *
  * `tagsSignal` caches the whole catalogue for pickers, and `popularTagsSignal`
- * carries post counts for the sidebar ranking. Creating a tag is idempotent:
+ * carries post counts for the sidebar ranking. Both fall back to the bundled
+ * catalogue when the remote is unconfigured or unreachable, so tag chips, the
+ * sidebar ranking and the post cards that reference those tags stay consistent
+ * while the app runs on sample content.
+ *
+ * The ranking is ordered and truncated by `fetchPopularTags`, but it never
+ * writes back into `tagsSignal`: the editor's picker reads that signal as the
+ * complete catalogue, so publishing a top-eight list into it would silently
+ * remove tags the author was about to choose. Creating a tag is idempotent:
  * `getOrCreateTag` resolves an existing row when another author already used the
  * name instead of failing on the unique constraint.
  */
 @Injectable({ providedIn: 'root' })
 export class TagService {
-  private readonly supabase = inject(SupabaseService).client;
+  private readonly supabaseService = inject(SupabaseService);
+  private readonly supabase = this.supabaseService.client;
 
   readonly tagsSignal = signal<Tag[]>([]);
   readonly popularTagsSignal = signal<TagWithCount[]>([]);
@@ -64,6 +74,14 @@ export class TagService {
     this.loadingSignal.set(true);
     this.errorSignal.set('');
 
+    if (!this.supabaseService.isConfigured) {
+      const tags = this.publishLocalCatalogue();
+
+      this.loadingSignal.set(false);
+
+      return tags;
+    }
+
     try {
       const { data, error } = await this.supabase
         .from('tags')
@@ -76,12 +94,15 @@ export class TagService {
 
       const tags = ((data ?? []) as unknown as TagRow[]).map(mapTagRow);
       this.tagsSignal.set(tags);
+      this.supabaseService.markOnline();
 
       return tags;
     } catch (error) {
-      this.errorSignal.set(toErrorMessage(error, 'Could not load tags.'));
+      this.errorSignal.set('');
 
-      return [];
+      return this.publishLocalCatalogue(
+        toErrorMessage(error, 'The tag catalogue could not be reached.'),
+      );
     } finally {
       this.loadingSignal.set(false);
     }
@@ -91,6 +112,14 @@ export class TagService {
   async fetchPopularTags(limit = 12): Promise<TagWithCount[]> {
     this.loadingSignal.set(true);
     this.errorSignal.set('');
+
+    if (!this.supabaseService.isConfigured) {
+      const tags = this.publishLocalRanking(limit);
+
+      this.loadingSignal.set(false);
+
+      return tags;
+    }
 
     try {
       const { data, error } = await this.supabase
@@ -108,16 +137,49 @@ export class TagService {
         .slice(0, limit);
 
       this.popularTagsSignal.set(tags);
-      this.tagsSignal.set(tags.map(({ postsCount: _postsCount, ...tag }) => tag));
+      this.supabaseService.markOnline();
 
       return tags;
     } catch (error) {
-      this.errorSignal.set(toErrorMessage(error, 'Could not load popular tags.'));
+      this.errorSignal.set('');
 
-      return [];
+      return this.publishLocalRanking(
+        limit,
+        toErrorMessage(error, 'The popular tags could not be reached.'),
+      );
     } finally {
       this.loadingSignal.set(false);
     }
+  }
+
+  /**
+   * Publishes the bundled catalogue.
+   *
+   * Reports the fallback through the connectivity signals rather than
+   * `errorSignal`: the request succeeded as far as the reader is concerned, and
+   * the shell already tells them the content is local.
+   */
+  private publishLocalCatalogue(reason = 'The tag catalogue is being served from the bundled dataset.'): Tag[] {
+    const tags = MOCK_TAGS.map(({ postsCount: _postsCount, ...tag }) => tag);
+
+    this.supabaseService.markOffline(reason);
+    this.tagsSignal.set(tags);
+
+    return tags;
+  }
+
+  /** Publishes the bundled ranking, ordered and limited exactly like the query. */
+  private publishLocalRanking(limit: number, reason?: string): TagWithCount[] {
+    const tags = MOCK_TAGS.slice()
+      .sort((a, b) => b.postsCount - a.postsCount || a.name.localeCompare(b.name))
+      .slice(0, Math.max(1, limit));
+
+    this.supabaseService.markOffline(
+      reason ?? 'The popular tags are being served from the bundled dataset.',
+    );
+    this.popularTagsSignal.set(tags);
+
+    return tags;
   }
 
   /**
@@ -131,6 +193,10 @@ export class TagService {
 
     if (name.length < MIN_TAG_NAME_LENGTH) {
       throw new Error('Tag names need at least 2 letters or numbers.');
+    }
+
+    if (!this.supabaseService.isConfigured) {
+      throw new Error('Creating tags needs a Supabase connection, which this build does not have.');
     }
 
     const existing = this.tagsSignal().find((tag) => tag.name === name);
