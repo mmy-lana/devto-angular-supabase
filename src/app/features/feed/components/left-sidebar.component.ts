@@ -78,7 +78,7 @@ import { IconComponent } from '../../../shared/ui/icon/icon.component';
               <a
                 [routerLink]="['/']"
                 [queryParams]="{ tag: tag.name }"
-                class="flex items-center justify-between gap-2 min-h-9 px-3 py-1.5 rounded text-xs font-mono text-gray-600 hover:text-black hover:bg-gray-200"
+                class="flex items-center justify-between gap-2 min-h-[44px] px-3 py-1.5 rounded text-xs font-mono text-gray-600 hover:text-black hover:bg-gray-200"
                 [class.bg-gray-200]="activeTag() === tag.name"
                 [class.font-bold]="activeTag() === tag.name"
                 [attr.aria-current]="activeTag() === tag.name ? 'true' : null"

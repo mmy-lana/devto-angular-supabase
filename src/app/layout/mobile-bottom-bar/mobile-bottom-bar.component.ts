@@ -9,6 +9,10 @@ import { IconComponent } from '../../shared/ui/icon/icon.component';
  * The centre action changes with the session: signed-in readers get the create
  * shortcut, visitors get the sign-in prompt. Every target is at least 44px tall
  * so it stays inside the comfortable thumb zone.
+ *
+ * The dock reserves the device safe area: `min-h-14` keeps the 3.5rem row, and
+ * `env(safe-area-inset-bottom)` is added below it so the labels are never drawn
+ * under the home indicator.
  */
 @Component({
   selector: 'app-mobile-bottom-bar',
@@ -16,7 +20,7 @@ import { IconComponent } from '../../shared/ui/icon/icon.component';
   template: `
     <nav
       aria-label="Mobile navigation"
-      class="sm:hidden fixed bottom-0 left-0 right-0 h-14 bg-white border-t border-[#e2e8f0] flex items-center justify-around z-40 px-2 shadow-lg"
+      class="sm:hidden fixed bottom-0 left-0 right-0 min-h-14 pb-[env(safe-area-inset-bottom)] bg-white border-t border-[#e2e8f0] flex items-center justify-around z-40 px-2 shadow-lg"
     >
       <a
         routerLink="/"

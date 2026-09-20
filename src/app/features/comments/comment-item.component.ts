@@ -54,7 +54,7 @@ import { CommentComposerComponent } from './comment-composer.component';
             @if (isOwnComment()) {
               <button
                 type="button"
-                class="shrink-0 inline-flex items-center gap-1 min-h-9 px-2 rounded text-[11px] text-gray-500 hover:text-red-600 hover:bg-red-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+                class="shrink-0 inline-flex items-center justify-center gap-1 min-h-[44px] min-w-[44px] px-2 rounded text-[11px] text-gray-500 hover:text-red-600 hover:bg-red-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
                 [attr.aria-label]="'Delete your comment on ' + comment().author.fullName"
                 (click)="isConfirmingDelete.set(true)"
               >
@@ -70,14 +70,14 @@ import { CommentComposerComponent } from './comment-composer.component';
               <div class="flex items-center gap-2">
                 <button
                   type="button"
-                  class="min-h-9 px-3 rounded bg-red-600 text-white text-[11px] font-medium hover:bg-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+                  class="min-h-[44px] min-w-[44px] px-3 rounded bg-red-600 text-white text-[11px] font-medium hover:bg-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
                   (click)="confirmDelete()"
                 >
                   Delete
                 </button>
                 <button
                   type="button"
-                  class="min-h-9 px-3 rounded text-[11px] font-medium text-gray-600 hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+                  class="min-h-[44px] min-w-[44px] px-3 rounded text-[11px] font-medium text-gray-600 hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
                   (click)="isConfirmingDelete.set(false)"
                 >
                   Keep it

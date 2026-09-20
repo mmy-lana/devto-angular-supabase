@@ -33,7 +33,7 @@ import { OfflineNoticeComponent } from './offline-notice/offline-notice.componen
 
       <app-offline-notice />
 
-      <main class="flex-1 pb-16 sm:pb-8">
+      <main class="flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:pb-8">
         <router-outlet />
       </main>
 

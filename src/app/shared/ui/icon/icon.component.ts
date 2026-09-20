@@ -22,6 +22,7 @@ export type IconName =
   | 'tag'
   | 'trash'
   | 'twitter'
+  | 'unicorn'
   | 'user';
 
 /** Rendered size of the glyph. */
@@ -107,6 +108,27 @@ const ICONS: Record<IconName, IconDefinition> = {
     filled: true,
     paths: [
       'M23 3a10.9 10.9 0 01-3.14 1.53 4.48 4.48 0 00-7.86 3v1A10.66 10.66 0 013 4s-4 9 5 13a11.64 11.64 0 01-7 2c9 5 20 0 20-11.5a4.5 4.5 0 00-.08-.83A7.72 7.72 0 0023 3z',
+    ],
+  },
+  /**
+   * Unicorn head, drawn for this project.
+   *
+   * The set started from a 24x24 stroke library that has no unicorn, and the
+   * reaction rail used to render the unicorn reaction as an emoji glyph. The
+   * glyph below keeps that reaction in the same visual language as the heart,
+   * bookmark and comment next to it: a horn, an ear, the face profile, the neck
+   * and an eye, all on the shared 24x24 grid with round caps and joins.
+   */
+  unicorn: {
+    paths: [
+      'M12.4 7.2L10 2.4',
+      'M12.4 7.2C9.8 7.5 7.6 9.3 6.7 11.7',
+      'M6.7 11.7c-.9 1-.9 2.6 0 3.6',
+      'M6.7 15.3c1.6.6 2.7 2 3 3.6V21',
+      'M12.4 7.2c1.7 0 3.3.8 4.3 2.2 1 1.4 1.5 3.1 1.5 4.8V21',
+      'M9.7 21h9.5',
+      'M14.8 5.6c.8.6 1.4 1.5 1.7 2.5',
+      'M10.4 10.6h.01',
     ],
   },
   user: {

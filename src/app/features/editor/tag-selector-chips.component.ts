@@ -9,6 +9,28 @@ const MAX_SUGGESTIONS = 6;
 const MIN_CREATE_LENGTH = 2;
 
 /**
+ * Normalises what the reader typed into a tag query (UI-02).
+ *
+ * Tags are displayed with a `#` prefix everywhere else in the interface, so
+ * readers type it here as well. Stripping it before matching and before creating
+ * is what makes `#ang` offer the existing `angular` tag: without this, the
+ * needle `#ang` matched nothing, the picker offered to create `#ang` as a new
+ * tag, and `TagService` then slugified it back to a name that already existed.
+ * A query of just `#` therefore counts as empty, which is also what the reader
+ * means by it.
+ *
+ * Exported because it is the whole of the matching rule and is exercised
+ * directly, without a browser, by the project's verification harness.
+ */
+export function normalizeTagQuery(value: string): string {
+  return value
+    .trim()
+    .replace(/^#+/, '')
+    .trim()
+    .toLowerCase();
+}
+
+/**
  * Tag picker used by the post editor.
  *
  * The component is presentational: it filters the tags it is given and reports
@@ -164,7 +186,7 @@ export class TagSelectorChipsComponent {
   protected readonly highlightedIndex = signal<number>(0);
   protected readonly isFocused = signal<boolean>(false);
 
-  protected readonly normalizedQuery = computed(() => this.query().trim().toLowerCase());
+  protected readonly normalizedQuery = computed(() => normalizeTagQuery(this.query()));
 
   protected readonly suggestions = computed(() => {
     const needle = this.normalizedQuery();

@@ -192,8 +192,18 @@ body {
   margin: 2rem 0;
 }
 
+/*
+ * UI-04: a wide markdown table used to stretch the whole article column and push
+ * the page sideways on a phone. Making the table its own scroll container keeps
+ * the layout fixed while every column stays reachable, and the touch scrolling
+ * hint keeps the gesture feeling native on iOS.
+ */
 .devto-prose table {
+  display: block;
   width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
   border-collapse: collapse;
   font-size: 0.9rem;
 }

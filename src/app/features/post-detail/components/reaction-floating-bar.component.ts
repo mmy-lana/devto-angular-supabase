@@ -9,6 +9,12 @@ import { IconComponent } from '../../../shared/ui/icon/icon.component';
  * bottom edge as a fixed bar below that. `hidden lg:flex` / `lg:hidden` keep
  * exactly one of the two in the layout, so the shell can hide its own bottom
  * dock on this route without leaving a gap.
+ *
+ * The fixed bar reserves the device safe area (A11Y-01): its height is a minimum
+ * rather than a fixed 3.5rem, and `env(safe-area-inset-bottom)` is added as
+ * padding, so on a phone with a home indicator the controls sit above it instead
+ * of underneath it. The shell pads the page by the same amount, which keeps the
+ * end of the article reachable.
  */
 @Component({
   selector: 'app-reaction-floating-bar',
@@ -39,11 +45,10 @@ import { IconComponent } from '../../../shared/ui/icon/icon.component';
         (click)="reactionClicked.emit('unicorn')"
       >
         <span
-          class="w-10 h-10 rounded-full flex items-center justify-center text-xl transition-colors"
+          class="w-10 h-10 rounded-full flex items-center justify-center text-emerald-600 transition-colors"
           [class]="reactions().unicorn ? 'bg-emerald-50' : 'hover:bg-emerald-50'"
-          aria-hidden="true"
         >
-          🦄
+          <app-icon name="unicorn" size="lg" />
         </span>
         <span class="text-xs font-medium text-gray-700 mt-1">{{ unicornsCount() }}</span>
       </button>
@@ -80,7 +85,7 @@ import { IconComponent } from '../../../shared/ui/icon/icon.component';
     </div>
 
     <div
-      class="lg:hidden fixed bottom-0 left-0 right-0 h-14 bg-white border-t border-[#e2e8f0] flex items-center justify-around z-30 px-2 shadow-md"
+      class="lg:hidden fixed bottom-0 left-0 right-0 min-h-14 pb-[env(safe-area-inset-bottom)] bg-white border-t border-[#e2e8f0] flex items-center justify-around z-30 px-2 shadow-md"
     >
       <button
         type="button"
@@ -102,7 +107,9 @@ import { IconComponent } from '../../../shared/ui/icon/icon.component';
         aria-label="Unicorn reaction"
         (click)="reactionClicked.emit('unicorn')"
       >
-        <span class="text-base" aria-hidden="true">🦄</span>
+        <span [class]="reactions().unicorn ? 'text-emerald-600' : 'text-gray-600'">
+          <app-icon name="unicorn" size="md" />
+        </span>
         <span class="text-xs font-bold text-gray-700">{{ unicornsCount() }}</span>
       </button>
 
