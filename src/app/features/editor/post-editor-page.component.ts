@@ -4,6 +4,7 @@ import { Router, RouterLink } from '@angular/router';
 import type { Tag } from '../../core/models/tag.model';
 import { AuthService } from '../../core/services/auth.service';
 import { PostService } from '../../core/services/post.service';
+import { SupabaseService } from '../../core/services/supabase.service';
 import { createPendingTag, isPendingTag, TagService } from '../../core/services/tag.service';
 import { toErrorMessage } from '../../core/utils/error-message.util';
 import { MarkdownEditorComponent } from '../../shared/molecules/markdown-editor/markdown-editor.component';
@@ -58,6 +59,16 @@ const MAX_TITLE_LENGTH = 120;
           class="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
         >
           {{ error }}
+        </div>
+      }
+
+      @if (supabaseService.offlineModeSignal()) {
+        <div
+          role="status"
+          class="mb-4 rounded-md border border-[#f0d28a] bg-[#fff8e5] px-4 py-3 text-xs text-[#7a5c04]"
+        >
+          <span class="font-bold">Offline / Sample Content Mode:</span> Publishing new posts is
+          disabled while disconnected from Supabase. Connect an active database to publish articles.
         </div>
       }
 
@@ -148,6 +159,7 @@ const MAX_TITLE_LENGTH = 120;
 export class PostEditorPageComponent {
   private readonly postService = inject(PostService);
   protected readonly tagService = inject(TagService);
+  protected readonly supabaseService = inject(SupabaseService);
   private readonly authService = inject(AuthService);
   private readonly router = inject(Router);
 
@@ -185,7 +197,8 @@ export class PostEditorPageComponent {
   protected readonly canPublish = () =>
     this.title().trim().length >= 5 &&
     this.markdownContent().trim().length > 0 &&
-    !this.publishing();
+    !this.publishing() &&
+    !this.supabaseService.offlineModeSignal();
 
   constructor() {
     void this.tagService.fetchTags();
