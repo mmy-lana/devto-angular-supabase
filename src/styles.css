@@ -67,8 +67,15 @@ body {
   min-width: 44px;
 }
 
-/* Rendered markdown: the inline classes produced by `MarkdownService` cover
-   typography, this only normalises the wrapper box. */
+/* Rendered markdown (articles, comments, editor preview). `MarkdownService`
+   emits semantic HTML, so all article typography lives here. */
+.devto-prose {
+  color: var(--color-dev-text-main);
+  line-height: 1.75;
+  font-size: 1rem;
+  overflow-wrap: break-word;
+}
+
 .devto-prose > :first-child {
   margin-top: 0;
 }
@@ -77,10 +84,129 @@ body {
   margin-bottom: 0;
 }
 
-.devto-prose p {
-  overflow-wrap: break-word;
+.devto-prose h1,
+.devto-prose h2,
+.devto-prose h3,
+.devto-prose h4 {
+  font-weight: 800;
+  line-height: 1.25;
+  margin: 2rem 0 1rem;
+}
+
+.devto-prose h1 {
+  font-size: 2rem;
+}
+
+.devto-prose h2 {
+  font-size: 1.5rem;
+}
+
+.devto-prose h3 {
+  font-size: 1.25rem;
+}
+
+.devto-prose h4 {
+  font-size: 1.05rem;
+}
+
+.devto-prose p,
+.devto-prose ul,
+.devto-prose ol,
+.devto-prose blockquote,
+.devto-prose pre,
+.devto-prose table {
+  margin: 0 0 1.25rem;
+}
+
+.devto-prose ul,
+.devto-prose ol {
+  padding-left: 1.5rem;
+}
+
+.devto-prose ul {
+  list-style: disc;
+}
+
+.devto-prose ol {
+  list-style: decimal;
+}
+
+.devto-prose li {
+  margin-bottom: 0.35rem;
+}
+
+.devto-prose a {
+  color: var(--color-dev-brand);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.devto-prose a:hover {
+  color: var(--color-dev-brand-hover);
+}
+
+.devto-prose strong {
+  font-weight: 700;
+}
+
+.devto-prose blockquote {
+  border-left: 4px solid var(--color-dev-card-border-strong);
+  padding: 0.25rem 0 0.25rem 1rem;
+  color: var(--color-dev-text-secondary);
+  font-style: italic;
+}
+
+.devto-prose code {
+  background-color: #f0f0f0;
+  border-radius: 3px;
+  padding: 0.15rem 0.35rem;
+  font-family: var(--font-mono-dev);
+  font-size: 0.875em;
 }
 
 .devto-prose pre {
-  scrollbar-width: thin;
+  background-color: var(--color-dev-surface-dark);
+  color: #f5f5f5;
+  border-radius: 6px;
+  padding: 1rem 1.25rem;
+  overflow-x: auto;
 }
+
+.devto-prose pre code {
+  background-color: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+.devto-prose img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+
+.devto-prose hr {
+  border: 0;
+  border-top: 1px solid var(--color-dev-card-border);
+  margin: 2rem 0;
+}
+
+.devto-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.devto-prose th,
+.devto-prose td {
+  border: 1px solid var(--color-dev-card-border);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+
+.devto-prose th {
+  background-color: #f5f5f5;
+  font-weight: 700;
+}
+

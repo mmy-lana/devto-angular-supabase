@@ -17,6 +17,8 @@
     "@angular/platform-browser": "latest",
     "@angular/router": "latest",
     "@supabase/supabase-js": "latest",
+    "dompurify": "^3.4.15",
+    "marked": "^18.0.13",
     "rxjs": "latest",
     "tslib": "latest",
     "zone.js": "latest"
