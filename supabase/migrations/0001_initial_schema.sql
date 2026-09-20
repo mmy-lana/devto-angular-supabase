@@ -111,16 +111,23 @@ alter table public.reactions enable row level security;
 
 -- Profiles: Anyone can view; only owner can update
 create policy "Profiles are viewable by everyone" on public.profiles for select using (true);
-create policy "Users can update their own profile" on public.profiles for update using (auth.uid() = id);
+create policy "Users can update their own profile" on public.profiles for update
+    using (auth.uid() = id)
+    with check (auth.uid() = id);
 
 -- Tags: Read-only for public; authenticated users can insert missing tags
 create policy "Tags are viewable by everyone" on public.tags for select using (true);
 create policy "Authenticated users can create tags" on public.tags for insert with check (auth.role() = 'authenticated');
 
--- Posts: Public read if published; author can read/write unpublished
+-- Posts: Public read if published; author can read/write unpublished.
+-- SEC-02: `with check` is required in addition to `using`. Without it an author
+-- could reassign `author_id` to somebody else on update, which both forges
+-- authorship and hands the row to another account.
 create policy "Public posts are viewable by everyone" on public.posts for select using (published = true or auth.uid() = author_id);
 create policy "Authenticated users can insert posts" on public.posts for insert with check (auth.uid() = author_id);
-create policy "Authors can update their own posts" on public.posts for update using (auth.uid() = author_id);
+create policy "Authors can update their own posts" on public.posts for update
+    using (auth.uid() = author_id)
+    with check (auth.uid() = author_id);
 create policy "Authors can delete their own posts" on public.posts for delete using (auth.uid() = author_id);
 
 -- Post Tags: Viewable by everyone; managed by post author
@@ -132,10 +139,14 @@ create policy "Post authors can delete post tags" on public.post_tags for delete
     exists (select 1 from public.posts where id = post_id and author_id = auth.uid())
 );
 
--- Comments: Public view; authenticated creation; owner update/delete
+-- Comments: Public view; authenticated creation; owner update/delete.
+-- SEC-02: `with check` pins `author_id` (and therefore the post the comment
+-- belongs to) for the whole lifetime of the row.
 create policy "Comments are viewable by everyone" on public.comments for select using (true);
 create policy "Authenticated users can create comments" on public.comments for insert with check (auth.uid() = author_id);
-create policy "Authors can update their own comments" on public.comments for update using (auth.uid() = author_id);
+create policy "Authors can update their own comments" on public.comments for update
+    using (auth.uid() = author_id)
+    with check (auth.uid() = author_id);
 create policy "Authors can delete their own comments" on public.comments for delete using (auth.uid() = author_id);
 
 -- Reactions: Public view; authenticated toggle (insert/delete)
@@ -144,15 +155,38 @@ create policy "Authenticated users can insert reactions" on public.reactions for
 create policy "Users can delete their own reactions" on public.reactions for delete using (auth.uid() = user_id);
 
 -- 9. TRIGGERS & RPC COUNTER SYNCHRONIZERS
--- Auto-create profile on auth.users registration with username collision avoidance
+
+-- Auto-create the profile row for a new auth user, with a username that always
+-- satisfies the `profiles.username` check constraint.
+--
+-- SEC-01: `raw_user_meta_data` is user controlled — it is copied verbatim from
+-- whatever the sign-up client sent. Previously it was inserted unvalidated, so a
+-- name such as `O'Brien`, `#1 dev` or an empty string aborted the trigger, the
+-- transaction, and therefore the whole sign-up. The value is now reduced to
+-- `[a-zA-Z0-9_]`, and anything shorter than three characters (including the
+-- empty result of a fully invalid name) falls back to a deterministic id-derived
+-- handle. The collision loop still guarantees uniqueness for both paths.
 create or replace function public.handle_new_user()
 returns trigger as $$
 declare
+    raw_username text;
     base_username text;
     final_username text;
     counter integer := 0;
 begin
-    base_username := coalesce(new.raw_user_meta_data->>'user_name', 'dev_' || substr(md5(new.id::text), 1, 8));
+    raw_username := regexp_replace(
+        coalesce(new.raw_user_meta_data->>'user_name', ''),
+        '[^a-zA-Z0-9_]',
+        '',
+        'g'
+    );
+
+    if char_length(raw_username) < 3 then
+        base_username := 'dev_' || substr(md5(new.id::text), 1, 8);
+    else
+        base_username := left(raw_username, 30);
+    end if;
+
     final_username := base_username;
 
     while exists (select 1 from public.profiles where username = final_username) loop
@@ -164,8 +198,11 @@ begin
     values (
         new.id,
         final_username,
-        coalesce(new.raw_user_meta_data->>'full_name', 'Dev Member'),
-        coalesce(new.raw_user_meta_data->>'avatar_url', 'https://api.dicebear.com/7.x/bottts/svg?seed=' || new.id::text)
+        coalesce(nullif(trim(new.raw_user_meta_data->>'full_name'), ''), 'Dev Member'),
+        coalesce(
+            nullif(trim(new.raw_user_meta_data->>'avatar_url'), ''),
+            'https://api.dicebear.com/7.x/bottts/svg?seed=' || new.id::text
+        )
     );
     return new;
 end;
@@ -214,3 +251,53 @@ $$ language plpgsql security definer;
 create trigger trg_post_comment_count
     after insert or delete or update of is_deleted on public.comments
     for each row execute function public.update_post_comments_count();
+
+-- Atomic comment likes counter trigger.
+--
+-- DATA-01: `public.comments.likes_count` had no writer at all, so every comment
+-- rendered the stale default 0 forever — the optimistic like in the UI snapped
+-- back to zero on the next reload. The counter now tracks `like` reactions that
+-- carry a `comment_id`; reactions are immutable (the app only inserts and
+-- deletes them, and there is no update policy on the table), so insert/delete is
+-- the complete mutation surface. Rows written before this trigger existed are
+-- repaired by the backfill at the end of this file.
+create or replace function public.update_comment_likes_count()
+returns trigger as $$
+begin
+    if (TG_OP = 'INSERT' and NEW.comment_id is not null and NEW.reaction = 'like') then
+        update public.comments
+        set likes_count = likes_count + 1
+        where id = NEW.comment_id;
+    elsif (TG_OP = 'DELETE' and OLD.comment_id is not null and OLD.reaction = 'like') then
+        update public.comments
+        set likes_count = greatest(likes_count - 1, 0)
+        where id = OLD.comment_id;
+    end if;
+    return null;
+end;
+$$ language plpgsql security definer;
+
+create trigger trg_comment_like_count
+    after insert or delete on public.reactions
+    for each row execute function public.update_comment_likes_count();
+
+-- One-time reconciliation for databases that already held like reactions before
+-- `trg_comment_like_count` existed. Idempotent: it recomputes the column from
+-- the source of truth instead of incrementing it.
+update public.comments c
+set likes_count = coalesce(r.likes, 0)
+from (
+    select comment_id, count(*)::integer as likes
+    from public.reactions
+    where comment_id is not null and reaction = 'like'
+    group by comment_id
+) r
+where r.comment_id = c.id and c.likes_count <> coalesce(r.likes, 0);
+
+update public.comments c
+set likes_count = 0
+where c.likes_count <> 0
+  and not exists (
+      select 1 from public.reactions r
+      where r.comment_id = c.id and r.reaction = 'like'
+  );
