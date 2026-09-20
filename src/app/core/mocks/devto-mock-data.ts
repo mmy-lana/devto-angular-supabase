@@ -706,10 +706,13 @@ function buildMockComments(): Record<string, CommentNode[]> {
 /** Comment trees per post id, keyed exactly like `CommentService` looks them up. */
 export const MOCK_COMMENTS: Record<string, CommentNode[]> = buildMockComments();
 
-/** Total number of comments a post has in the dataset, replies included. */
+/** Total number of active comments a post has in the dataset (DATA-04). */
 function countPostComments(postId: string): number {
   const countNodes = (nodes: CommentNode[]): number =>
-    nodes.reduce((total, node) => total + 1 + countNodes(node.replies), 0);
+    nodes.reduce(
+      (total, node) => total + (node.isDeleted ? 0 : 1) + countNodes(node.replies),
+      0,
+    );
 
   return countNodes(MOCK_COMMENTS[postId] ?? []);
 }

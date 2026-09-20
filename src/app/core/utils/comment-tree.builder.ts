@@ -93,10 +93,19 @@ export function buildCommentTree(
   return rootNodes;
 }
 
-/** Total number of comments in a tree, including nested replies. */
-export function countCommentNodes(nodes: CommentNode[]): number {
-  return nodes.reduce((total, node) => total + 1 + countCommentNodes(node.replies), 0);
+/**
+ * Total number of active (non-deleted) comments, matching the database
+ * `posts.comments_count` counter maintained by triggers (DATA-04).
+ */
+export function countActiveCommentNodes(nodes: CommentNode[]): number {
+  return nodes.reduce(
+    (total, node) => total + (node.isDeleted ? 0 : 1) + countActiveCommentNodes(node.replies),
+    0,
+  );
 }
+
+/** Backwards-compatible alias adhering to active comment counts. */
+export const countCommentNodes = countActiveCommentNodes;
 
 /** Finds a node anywhere in the tree, or `null` when the id is absent. */
 export function findCommentNode(nodes: CommentNode[], commentId: string): CommentNode | null {

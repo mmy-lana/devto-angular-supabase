@@ -283,6 +283,9 @@ export class PostDetailPageComponent {
 
   protected async onCommentDelete(commentId: string): Promise<void> {
     await this.commentService.deleteComment(commentId);
+    this.post.update((current) =>
+      current ? { ...current, commentsCount: this.commentService.totalCount() } : current,
+    );
   }
 
   protected async onReaction(type: ReactionType): Promise<void> {
