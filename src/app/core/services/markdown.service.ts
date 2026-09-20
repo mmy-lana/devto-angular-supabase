@@ -1,51 +1,65 @@
 import { Injectable } from '@angular/core';
 import DOMPurify from 'dompurify';
-import { Marked } from 'marked';
-
-/** Words per minute used by the reading-time estimate. */
-const WORDS_PER_MINUTE = 200;
+import {
+  calculateReadingTime,
+  markdownToPlainText,
+  renderMarkdownToHtml,
+} from '../utils/markdown.util';
 
 /** Length of the random suffix appended to generated slugs. */
 const SLUG_SUFFIX_LENGTH = 4;
 
 /**
+ * Attributes the sanitiser must keep on anchors.
+ *
+ * DOMPurify drops every attribute that is not on its allowlist, so without this
+ * the `target` and `rel` hardening applied by the renderer would be stripped
+ * again on the way through `parseMarkdownToHtml`.
+ */
+const ALLOWED_LINK_ATTRIBUTES = ['target', 'rel'];
+
+/** Applied to every anchor that survives sanitising. */
+const EXTERNAL_LINK_ATTRIBUTES: Record<string, string> = {
+  target: '_blank',
+  rel: 'noopener noreferrer',
+};
+
+/**
  * Markdown rendering for article bodies and comment threads.
  *
- * Rendering happens in two steps: `marked` turns GFM into HTML and DOMPurify
- * strips anything executable before the result is stored in
- * `posts.content_html` / `comments.content_html` or bound with `[innerHTML]`.
- * Sanitising on the way in as well as on the way out means a hostile body can
- * never be persisted and never reaches another reader.
+ * Rendering happens in two steps: the shared pipeline in `markdown.util.ts` turns
+ * GFM into HTML with hardened links, then DOMPurify strips anything executable
+ * before the result is stored in `posts.content_html` /
+ * `comments.content_html` or bound with `[innerHTML]`. Sanitising on the way in
+ * as well as on the way out means a hostile body can never be persisted and
+ * never reaches another reader.
  */
 @Injectable({ providedIn: 'root' })
 export class MarkdownService {
-  private readonly markdown = new Marked({
-    gfm: true,
-    breaks: true,
-  });
+  constructor() {
+    // SEC-03, second half: markup stored before this service started hardening
+    // links — or written by an older client — still arrives with a bare anchor.
+    // Rewriting the attributes after sanitising guarantees every rendered link
+    // carries them, whichever path produced the HTML.
+    DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+      if (node.tagName !== 'A') {
+        return;
+      }
+
+      for (const [name, value] of Object.entries(EXTERNAL_LINK_ATTRIBUTES)) {
+        node.setAttribute(name, value);
+      }
+    });
+  }
 
   /**
    * Estimated reading time in whole minutes (minimum 1).
    *
-   * Fenced code blocks are excluded because they are skimmed rather than read,
-   * and markdown punctuation is stripped so it does not inflate the count.
+   * Delegates to the shared pipeline so the editor preview, the published post
+   * and the bundled offline dataset always agree on the number.
    */
   calculateReadingTime(markdown: string): number {
-    const source = (markdown ?? '').trim();
-
-    if (source.length === 0) {
-      return 1;
-    }
-
-    const withoutCodeFences = source.replace(/```[\s\S]*?```/g, '');
-    const plainText = withoutCodeFences
-      .replace(/`[^`]*`/g, '')
-      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
-      .replace(/[#>*_~-]+/g, ' ');
-
-    const wordCount = plainText.split(/\s+/).filter((word) => word.length > 0).length;
-
-    return Math.max(1, Math.ceil(wordCount / WORDS_PER_MINUTE));
+    return calculateReadingTime(markdown);
   }
 
   /**
@@ -73,31 +87,22 @@ export class MarkdownService {
    * be rendered as an article (`devto-prose`) or as a comment (`devto-comment`).
    */
   parseMarkdownToHtml(markdown: string): string {
-    const source = (markdown ?? '').trim();
+    const rendered = renderMarkdownToHtml(markdown);
 
-    if (source.length === 0) {
+    if (rendered.length === 0) {
       return '';
     }
 
-    const rendered = this.markdown.parse(source, { async: false }) as string;
-
     return DOMPurify.sanitize(rendered, {
       USE_PROFILES: { html: true },
+      ADD_ATTR: ALLOWED_LINK_ATTRIBUTES,
       FORBID_TAGS: ['style', 'form', 'input', 'button'],
     });
   }
 
   /** Plain-text excerpt of a markdown body, used for previews and meta text. */
   toPlainText(markdown: string, maxLength = 160): string {
-    const text = (markdown ?? '')
-      .replace(/```[\s\S]*?```/g, ' ')
-      .replace(/`([^`]*)`/g, '$1')
-      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
-      .replace(/[#>*_~]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    return text.length > maxLength ? `${text.slice(0, maxLength - 1).trimEnd()}…` : text;
+    return markdownToPlainText(markdown, maxLength);
   }
 }
 
