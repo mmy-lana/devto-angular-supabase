@@ -46,17 +46,15 @@ const POST_TAG_EMBED = 'post_tags ( tags (*) )';
 const POST_PROJECTION = `${POST_COLUMNS}, ${POST_AUTHOR_EMBED}, ${POST_TAG_EMBED}`;
 
 /**
- * Feed projection for a tag-filtered feed (ARCH-01).
+ * Feed projection for a tag-filtered feed (QUERY-01 / ARCH-01).
  *
- * `post_tags!inner(tags!inner(id))` turns the embeds into an inner join, so the
- * filter is applied by Postgres and only matching posts are returned. The filter
- * also narrows `post_tags` to the tag being filtered on, which would silently
- * drop a post's other tags from its card; `post_tags_all` therefore requests the
- * complete tag list through a second, unfiltered embed of the same relationship.
+ * `filter_tag:post_tags!inner(tag_id)` inner-joins the junction table so
+ * Postgres filters posts by tag id in a single query without nested dot-path
+ * syntax errors, while `post_tags` embeds the complete tag list for the card.
  */
 const TAG_FILTERED_POST_PROJECTION =
-  `${POST_COLUMNS}, ${POST_AUTHOR_EMBED}, ` +
-  'post_tags!inner ( tags!inner (id) ), post_tags_all:post_tags ( tags (*) )';
+  `${POST_COLUMNS}, ${POST_AUTHOR_EMBED}, ${POST_TAG_EMBED}, ` +
+  'filter_tag:post_tags!inner(tag_id)';
 
 /**
  * Feed projection for the reading list (ARCH-01).
@@ -111,13 +109,8 @@ function timeRangeStart(range: FeedFilter['timeRange']): string | null {
 const POSTGREST_RESERVED_CHARACTERS = /[,()%*\\"[\]']/g;
 
 /**
- * Removes the characters that would break PostgREST filter syntax (UI-01).
- *
- * The cleaned term is passed through as a value and percent-encoded by the
- * client when it builds the request, which is what makes terms such as `C#` or
- * `Q&A` safe: `#`, `&` and `+` are encoded on the wire and decoded again by
- * PostgREST. Encoding the term here as well would double-encode it, so the
- * pattern would look for the literal text `%23` instead of `#`.
+ * Removes characters that would break PostgREST filter syntax (QUERY-02).
+ * Strips reserved punctuation, quotes, and structural delimiters.
  */
 function sanitizeSearchTerm(term: string): string {
   return term.replace(POSTGREST_RESERVED_CHARACTERS, ' ').replace(/\s+/g, ' ').trim();
@@ -192,8 +185,23 @@ export class PostService {
         return [];
       }
 
-      // ARCH-01: the tag filter travels into the query as an inner join instead
-      // of being resolved to a list of post ids first.
+      let tagId: string | null = null;
+      if (filter.tag) {
+        const { data: tagData, error: tagError } = await this.supabase
+          .from('tags')
+          .select('id')
+          .eq('name', filter.tag)
+          .maybeSingle();
+
+        if (tagError || !tagData) {
+          this.publishPage([], filter.page <= 1, false);
+          return [];
+        }
+        tagId = (tagData as { id: string }).id;
+      }
+
+      // QUERY-01: Filter on 1-level junction embed `filter_tag.tag_id` to avoid
+      // 2-level nested dot syntax (`post_tags.tags.name`) rejected by PostgREST.
       const projection = filter.tag
         ? TAG_FILTERED_POST_PROJECTION
         : filter.bookmarkedOnly
@@ -202,8 +210,8 @@ export class PostService {
 
       let query = this.supabase.from('posts').select(projection).eq('published', true);
 
-      if (filter.tag) {
-        query = query.eq('post_tags.tags.name', filter.tag);
+      if (filter.tag && tagId) {
+        query = query.eq('filter_tag.tag_id', tagId);
       }
 
       if (filter.bookmarkedOnly && currentUserId) {
@@ -219,7 +227,11 @@ export class PostService {
       const searchTerm = sanitizeSearchTerm(filter.searchQuery ?? '');
 
       if (searchTerm.length > 0) {
-        query = query.or(`title.ilike.%${searchTerm}%,content_markdown.ilike.%${searchTerm}%`);
+        // QUERY-02: Double-quote the pattern so PostgREST logic tree parser
+        // treats dots (e.g. node.js) as literal values instead of field operators.
+        query = query.or(
+          `title.ilike."%${searchTerm}%",content_markdown.ilike."%${searchTerm}%"`,
+        );
       }
 
       if (filter.sort === 'latest') {
