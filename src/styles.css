@@ -210,3 +210,79 @@ body {
   font-weight: 700;
 }
 
+/* Comment bodies reuse the article typography at a smaller scale. */
+.devto-comment {
+  overflow-wrap: break-word;
+}
+
+.devto-comment p {
+  margin: 0 0 0.5rem;
+  line-height: 1.65;
+}
+
+.devto-comment p:last-child {
+  margin-bottom: 0;
+}
+
+.devto-comment a {
+  color: var(--color-dev-brand);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.devto-comment code {
+  background-color: #f0f0f0;
+  border-radius: 3px;
+  padding: 0.1rem 0.3rem;
+  font-family: var(--font-mono-dev);
+  font-size: 0.85em;
+}
+
+.devto-comment pre {
+  background-color: var(--color-dev-surface-dark);
+  color: #f5f5f5;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  margin: 0 0 0.5rem;
+}
+
+.devto-comment pre code {
+  background-color: transparent;
+  padding: 0;
+}
+
+.devto-comment ul,
+.devto-comment ol {
+  padding-left: 1.25rem;
+  margin: 0 0 0.5rem;
+}
+
+.devto-comment ul {
+  list-style: disc;
+}
+
+.devto-comment ol {
+  list-style: decimal;
+}
+
+.devto-comment blockquote {
+  border-left: 3px solid var(--color-dev-card-border-strong);
+  padding-left: 0.75rem;
+  color: var(--color-dev-text-secondary);
+  margin: 0 0 0.5rem;
+}
+
+/* Thread indentation.
+   Nested comments indent per level, but the step collapses on phones (and the
+   depth is clamped) so a long thread never runs out of horizontal room. */
+.comment-node {
+  margin-left: calc(min(var(--comment-depth, 0), 3) * 12px);
+}
+
+@media (min-width: 640px) {
+  .comment-node {
+    margin-left: calc(min(var(--comment-depth, 0), 5) * 24px);
+  }
+}
+

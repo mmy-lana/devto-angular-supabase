@@ -8,9 +8,6 @@ const WORDS_PER_MINUTE = 200;
 /** Length of the random suffix appended to generated slugs. */
 const SLUG_SUFFIX_LENGTH = 4;
 
-/** Wrapper class around rendered article HTML; styled in `src/styles.css`. */
-const PROSE_WRAPPER_CLASS = 'devto-prose';
-
 /**
  * Markdown rendering for article bodies and comment threads.
  *
@@ -69,7 +66,12 @@ export class MarkdownService {
     return `${base || 'post'}-${randomSuffix(SLUG_SUFFIX_LENGTH)}`;
   }
 
-  /** Renders sanitised HTML for a markdown body. Returns `''` for empty input. */
+  /**
+   * Renders sanitised HTML for a markdown body. Returns `''` for empty input.
+   *
+   * The output is content only — no wrapper element — so the same stored HTML can
+   * be rendered as an article (`devto-prose`) or as a comment (`devto-comment`).
+   */
   parseMarkdownToHtml(markdown: string): string {
     const source = (markdown ?? '').trim();
 
@@ -79,7 +81,7 @@ export class MarkdownService {
 
     const rendered = this.markdown.parse(source, { async: false }) as string;
 
-    return DOMPurify.sanitize(`<div class="${PROSE_WRAPPER_CLASS}">${rendered}</div>`, {
+    return DOMPurify.sanitize(rendered, {
       USE_PROFILES: { html: true },
       FORBID_TAGS: ['style', 'form', 'input', 'button'],
     });

@@ -92,7 +92,7 @@ const TOOLBAR_ACTIONS: readonly ToolbarAction[] = [
           ></textarea>
         } @else {
           @if (trimmedContent().length > 0) {
-            <div class="min-h-[160px] text-sm p-1" [innerHTML]="renderedPreview()"></div>
+            <div class="devto-prose min-h-[160px] text-sm p-1" [innerHTML]="renderedPreview()"></div>
           } @else {
             <p class="min-h-[160px] flex items-center justify-center text-sm text-gray-400">
               Nothing to preview yet. Switch back to Write and start typing.
