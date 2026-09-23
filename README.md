@@ -64,7 +64,7 @@ Database migrations and triggers reside in `supabase/migrations/0001_initial_sch
 
 ### 1. Clone & Install
 ```bash
-git clone https://github.com/your-username/devto-angular-supabase.git
+git clone https://github.com/mmy-lana/devto-angular-supabase.git
 cd devto-angular-supabase
 pnpm install
 ```
